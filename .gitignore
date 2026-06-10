@@ -1,0 +1,10 @@
+# Project build file
+/*.rbxm
+/*.rbxmx
+
+# VS Code files
+.vscode/*
+
+# Local build scripts
+watch-build.ps1
+build.project.json
