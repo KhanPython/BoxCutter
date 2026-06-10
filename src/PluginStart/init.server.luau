@@ -37,6 +37,7 @@ local unionOnBake = Value(false)
 local selectedTarget = Value(nil) -- first selected: plain block Part or cut model
 local pendingCutters = Value({}) -- subsequently selected plain block Parts
 local selectedModels = Value({}) -- every cut model in the selection
+local selectionCount = Value(0) -- raw selection size, for status messages
 local pluginJanitor = Janitor.new()
 
 -- Live tracking: cut models being watched for cutter movement.
@@ -111,17 +112,13 @@ end
 
 local function updateSelection()
 	local newSelection = Selection:Get()
-	local target = nil
-	local pending, models = {}, {}
+	local plainParts, models = {}, {}
 	local seenModels = {}
 
 	local function addModel(model: Model)
 		if not seenModels[model] then
 			seenModels[model] = true
 			table.insert(models, model)
-		end
-		if target == nil then
-			target = model
 		end
 	end
 
@@ -132,11 +129,25 @@ local function updateSelection()
 			addModel(item.Parent :: Model)
 		elseif Operations.isGeometryPart(item) then
 			addModel(item.Parent.Parent :: Model)
-		elseif item:IsA("Part") and item.Shape == Enum.PartType.Block then
-			if target == nil then
-				target = item
+		elseif item:IsA("BasePart") then
+			table.insert(plainParts, item)
+		end
+	end
+
+	-- An already-cut model in the selection is always the target, regardless
+	-- of selection order; every plain part then becomes a cutter. Otherwise
+	-- the first selected block Part is the target and the rest are cutters.
+	local target = nil
+	local pending = {}
+	if #models > 0 then
+		target = models[1]
+		pending = plainParts
+	else
+		for _, part in plainParts do
+			if target == nil and part:IsA("Part") and part.Shape == Enum.PartType.Block then
+				target = part
 			else
-				table.insert(pending, item)
+				table.insert(pending, part)
 			end
 		end
 	end
@@ -144,6 +155,7 @@ local function updateSelection()
 	selectedTarget:set(target)
 	pendingCutters:set(pending)
 	selectedModels:set(models)
+	selectionCount:set(#newSelection)
 
 	-- Watch selected models for live cutter movement
 	local newWatched = {}
@@ -238,6 +250,9 @@ local statusText = Computed(function()
 	local modelCount = #selectedModels:get()
 
 	if target == nil then
+		if selectionCount:get() > 0 then
+			return "No valid target: the part to cut must be a block Part"
+		end
 		return "Select the part to cut first"
 	end
 

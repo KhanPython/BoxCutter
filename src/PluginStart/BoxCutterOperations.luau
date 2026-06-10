@@ -206,25 +206,39 @@ local function approxEq(x: number, y: number): boolean
 	return math.abs(x - y) <= MERGE_EPS
 end
 
-local MERGE_AXES = {
-	{ "X", "Y", "Z" },
-	{ "Y", "X", "Z" },
-	{ "Z", "X", "Y" },
-}
+-- Identical extents on two axes (the one named by `skip` is ignored)
+local function extentsEqualExcept(a: Box, b: Box, skip: string): boolean
+	if skip ~= "X" and not (approxEq(a.min.X, b.min.X) and approxEq(a.max.X, b.max.X)) then
+		return false
+	end
+	if skip ~= "Y" and not (approxEq(a.min.Y, b.min.Y) and approxEq(a.max.Y, b.max.Y)) then
+		return false
+	end
+	if skip ~= "Z" and not (approxEq(a.min.Z, b.min.Z) and approxEq(a.max.Z, b.max.Z)) then
+		return false
+	end
+	return true
+end
+
+local function touchesAlong(a: Box, b: Box, axis: string): boolean
+	local amin, amax, bmin, bmax
+	if axis == "X" then
+		amin, amax, bmin, bmax = a.min.X, a.max.X, b.min.X, b.max.X
+	elseif axis == "Y" then
+		amin, amax, bmin, bmax = a.min.Y, a.max.Y, b.min.Y, b.max.Y
+	else
+		amin, amax, bmin, bmax = a.min.Z, a.max.Z, b.min.Z, b.max.Z
+	end
+	return amax + MERGE_EPS >= bmin and bmax + MERGE_EPS >= amin
+end
+
+local MERGE_AXES = { "X", "Y", "Z" }
 
 -- Returns the union of `a` and `b` if it is itself a box: identical extents
 -- on two axes and contiguous (or overlapping) on the third.
 local function tryMerge(a: Box, b: Box): Box?
-	for _, axes in MERGE_AXES do
-		local axis, o1, o2 = axes[1], axes[2], axes[3]
-		if
-			approxEq((a.min :: any)[o1], (b.min :: any)[o1])
-			and approxEq((a.max :: any)[o1], (b.max :: any)[o1])
-			and approxEq((a.min :: any)[o2], (b.min :: any)[o2])
-			and approxEq((a.max :: any)[o2], (b.max :: any)[o2])
-			and (a.max :: any)[axis] + MERGE_EPS >= (b.min :: any)[axis]
-			and (b.max :: any)[axis] + MERGE_EPS >= (a.min :: any)[axis]
-		then
+	for _, axis in MERGE_AXES do
+		if extentsEqualExcept(a, b, axis) and touchesAlong(a, b, axis) then
 			return { min = a.min:Min(b.min), max = a.max:Max(b.max) }
 		end
 	end
