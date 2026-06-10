@@ -55,6 +55,37 @@ local function finishLiveRecording()
 	end
 end
 
+-- Runs `callback` inside a ChangeHistory recording. The recording is always
+-- finished (Commit on success, Cancel on error) so a thrown error can never
+-- leave a recording open and block every future one. If a recording can't
+-- begin, the operation still runs - undo granularity degrades, the plugin
+-- keeps working.
+local function withRecording(name: string, displayName: string, callback: () -> ())
+	finishLiveRecording()
+
+	local recording = ChangeHistoryService:TryBeginRecording(name, displayName)
+	if not recording then
+		local blocked = ChangeHistoryService:IsRecordingInProgress()
+		warn(
+			"BoxCutter: Could not begin ChangeHistory recording"
+				.. (blocked and " (another recording is in progress - restart Studio if this persists)" or "")
+		)
+	end
+
+	local ok, err = pcall(callback)
+
+	if recording then
+		ChangeHistoryService:FinishRecording(
+			recording,
+			if ok then Enum.FinishRecordingOperation.Commit else Enum.FinishRecordingOperation.Cancel
+		)
+	end
+
+	if not ok then
+		warn("BoxCutter: " .. tostring(err))
+	end
+end
+
 local function snapshotModel(model: Model): { [any]: any }
 	local cutters = Operations.getCutters(model)
 	local state: { [any]: any } = { cutterCount = #cutters }
@@ -134,7 +165,13 @@ local function onHeartbeat()
 			if not liveRecording then
 				liveRecording = ChangeHistoryService:TryBeginRecording("BoxCutterLive", "Move Cut Box")
 			end
-			Operations.regenerate(model)
+			local ok, err = pcall(Operations.regenerate, model)
+			if not ok then
+				-- Stop watching so one bad model can't spam errors every frame
+				watched[model] = nil
+				warn("BoxCutter: live update failed: " .. tostring(err))
+				continue
+			end
 			watched[model] = snapshotModel(model)
 		end
 	end
@@ -153,26 +190,19 @@ local function doAddCutters()
 		return
 	end
 
-	finishLiveRecording()
-
-	local recording = ChangeHistoryService:TryBeginRecording("BoxCutterAdd", "Add Cutters")
-	if not recording then
-		warn("BoxCutter: Could not begin ChangeHistory recording")
-		return
-	end
-
-	local model = if target:IsA("Model") then target else Operations.setup(target)
-
 	local adopted = {}
-	for _, part in ipairs(pending) do
-		table.insert(adopted, Operations.adoptCutter(model, part))
-	end
-	Operations.regenerate(model)
-
-	ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.Commit)
+	withRecording("BoxCutterAdd", "Add Cutters", function()
+		local model = if target:IsA("Model") then target else Operations.setup(target)
+		for _, part in ipairs(pending) do
+			table.insert(adopted, Operations.adoptCutter(model, part))
+		end
+		Operations.regenerate(model)
+	end)
 
 	-- Keep the new cutters selected so they can be moved right away
-	Selection:Set(adopted)
+	if #adopted > 0 then
+		Selection:Set(adopted)
+	end
 end
 
 local function doBake()
@@ -183,21 +213,13 @@ local function doBake()
 
 	local shouldUnion = unionOnBake:get()
 
-	finishLiveRecording()
-
-	local recording = ChangeHistoryService:TryBeginRecording("BoxCutterBake", "Bake Cut Models")
-	if not recording then
-		warn("BoxCutter: Could not begin ChangeHistory recording")
-		return
-	end
-
 	local results = {}
-	for _, model in ipairs(models) do
-		watched[model] = nil
-		table.insert(results, Operations.bake(model, shouldUnion))
-	end
-
-	ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.Commit)
+	withRecording("BoxCutterBake", "Bake Cut Models", function()
+		for _, model in ipairs(models) do
+			watched[model] = nil
+			table.insert(results, Operations.bake(model, shouldUnion))
+		end
+	end)
 
 	if #results > 0 then
 		Selection:Set(results)
