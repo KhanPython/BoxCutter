@@ -34,13 +34,26 @@ local Computed = Fusion.Computed
 
 local widgetsEnabled = Value(false)
 local unionOnBake = Value(false)
-local selectedParts = Value({}) -- plain block Parts that can become cut models
-local selectedModels = Value({}) -- existing cut models (or their geometry/cutters)
+local selectedTarget = Value(nil) -- first selected: plain block Part or cut model
+local pendingCutters = Value({}) -- subsequently selected plain block Parts
+local selectedModels = Value({}) -- every cut model in the selection
 local pluginJanitor = Janitor.new()
 
 -- Live tracking: cut models being watched for cutter movement.
 -- model -> { cutterCount: number, [BasePart]: { cf: CFrame, size: Vector3 } }
 local watched: { [Model]: { [any]: any } } = {}
+
+-- One recording spans a whole drag session; committed once cutters go idle
+-- so live edits land in a single undo waypoint.
+local liveRecording: string? = nil
+local lastDirtyClock = 0
+
+local function finishLiveRecording()
+	if liveRecording then
+		ChangeHistoryService:FinishRecording(liveRecording, Enum.FinishRecordingOperation.Commit)
+		liveRecording = nil
+	end
+end
 
 local function snapshotModel(model: Model): { [any]: any }
 	local cutters = Operations.getCutters(model)
@@ -67,13 +80,17 @@ end
 
 local function updateSelection()
 	local newSelection = Selection:Get()
-	local parts, models = {}, {}
+	local target = nil
+	local pending, models = {}, {}
 	local seenModels = {}
 
 	local function addModel(model: Model)
 		if not seenModels[model] then
 			seenModels[model] = true
 			table.insert(models, model)
+		end
+		if target == nil then
+			target = model
 		end
 	end
 
@@ -85,11 +102,16 @@ local function updateSelection()
 		elseif Operations.isGeometryPart(item) then
 			addModel(item.Parent.Parent :: Model)
 		elseif item:IsA("Part") and item.Shape == Enum.PartType.Block then
-			table.insert(parts, item)
+			if target == nil then
+				target = item
+			else
+				table.insert(pending, item)
+			end
 		end
 	end
 
-	selectedParts:set(parts)
+	selectedTarget:set(target)
+	pendingCutters:set(pending)
 	selectedModels:set(models)
 
 	-- Watch selected models for live cutter movement
@@ -101,54 +123,56 @@ local function updateSelection()
 end
 
 local function onHeartbeat()
+	local anyDirty = false
 	for model, state in watched do
 		if not model.Parent then
 			watched[model] = nil
 			continue
 		end
 		if isModelDirty(model, state) then
-			-- Append to the dragger's waypoint so live updates don't flood undo
-			local recording = ChangeHistoryService:TryBeginRecording("BoxCutterLive", "Box Cutter Live Update")
-			Operations.regenerate(model)
-			if recording then
-				ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.AppendToLast)
+			anyDirty = true
+			if not liveRecording then
+				liveRecording = ChangeHistoryService:TryBeginRecording("BoxCutterLive", "Move Cut Box")
 			end
+			Operations.regenerate(model)
 			watched[model] = snapshotModel(model)
 		end
 	end
+
+	if anyDirty then
+		lastDirtyClock = os.clock()
+	elseif liveRecording and os.clock() - lastDirtyClock > Constants.LiveCommitDelay then
+		finishLiveRecording()
+	end
 end
 
-local function doAddCutBox()
-	local parts = selectedParts:get()
-	local models = selectedModels:get()
-	if #parts == 0 and #models == 0 then
+local function doAddCutters()
+	local target = selectedTarget:get()
+	local pending = pendingCutters:get()
+	if not target or #pending == 0 then
 		return
 	end
 
-	local recording = ChangeHistoryService:TryBeginRecording("BoxCutterAdd", "Add Cut Box")
+	finishLiveRecording()
+
+	local recording = ChangeHistoryService:TryBeginRecording("BoxCutterAdd", "Add Cutters")
 	if not recording then
 		warn("BoxCutter: Could not begin ChangeHistory recording")
 		return
 	end
 
-	local newCutters = {}
+	local model = if target:IsA("Model") then target else Operations.setup(target)
 
-	for _, part in ipairs(parts) do
-		local _, cutter = Operations.setup(part)
-		table.insert(newCutters, cutter)
+	local adopted = {}
+	for _, part in ipairs(pending) do
+		table.insert(adopted, Operations.adoptCutter(model, part))
 	end
-
-	for _, model in ipairs(models) do
-		local cutter = Operations.addCutter(model)
-		Operations.regenerate(model)
-		table.insert(newCutters, cutter)
-	end
+	Operations.regenerate(model)
 
 	ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.Commit)
 
-	if #newCutters > 0 then
-		Selection:Set(newCutters)
-	end
+	-- Keep the new cutters selected so they can be moved right away
+	Selection:Set(adopted)
 end
 
 local function doBake()
@@ -158,6 +182,8 @@ local function doBake()
 	end
 
 	local shouldUnion = unionOnBake:get()
+
+	finishLiveRecording()
 
 	local recording = ChangeHistoryService:TryBeginRecording("BoxCutterBake", "Bake Cut Models")
 	if not recording then
@@ -180,24 +206,26 @@ local function doBake()
 	updateSelection()
 end
 
-local hasSelection = Computed(function()
-	return #selectedParts:get() > 0 or #selectedModels:get() > 0
+local canAddCutters = Computed(function()
+	return selectedTarget:get() ~= nil and #pendingCutters:get() > 0
 end)
 
 local statusText = Computed(function()
-	local partCount = #selectedParts:get()
+	local target = selectedTarget:get()
+	local pendingCount = #pendingCutters:get()
 	local modelCount = #selectedModels:get()
-	if partCount == 0 and modelCount == 0 then
-		return "No parts selected"
+
+	if target == nil then
+		return "Select the part to cut first"
 	end
-	local segments = {}
-	if partCount > 0 then
-		table.insert(segments, partCount .. (partCount == 1 and " part" or " parts"))
+
+	local text = "Target: " .. target.Name
+	if pendingCount > 0 then
+		text ..= ", " .. pendingCount .. (pendingCount == 1 and " cutter to add" or " cutters to add")
+	elseif modelCount > 1 then
+		text ..= " (+" .. (modelCount - 1) .. " more cut models)"
 	end
-	if modelCount > 0 then
-		table.insert(segments, modelCount .. (modelCount == 1 and " cut model" or " cut models"))
-	end
-	return table.concat(segments, ", ") .. " selected"
+	return text
 end)
 
 do
@@ -262,16 +290,16 @@ do
 				}),
 
 				MainButton({
-					Text = "Add Cut Box",
+					Text = "Add Cutters",
 					Size = UDim2.new(1, 0, 0, 30),
 					LayoutOrder = 3,
-					Enabled = hasSelection,
-					Activated = doAddCutBox,
+					Enabled = canAddCutters,
+					Activated = doAddCutters,
 				}),
 
 				Label({
-					Text = "Move, rotate, or resize the red cutter boxes with the standard Studio tools. The cut updates live while this widget is open. Delete a cutter to remove its cut.",
-					Size = UDim2.new(1, 0, 0, 60),
+					Text = "Select the part to cut first, then Ctrl+click the parts to cut with and press Add Cutters. Move, rotate, resize, or delete cutters at any time - the cut updates live while this widget is open.",
+					Size = UDim2.new(1, 0, 0, 90),
 					TextSize = 15,
 					TextWrapped = true,
 					TextColorStyle = Enum.StudioStyleGuideColor.DimmedText,
@@ -318,12 +346,14 @@ do
 			pluginJanitor:Add(Selection.SelectionChanged:Connect(updateSelection))
 			pluginJanitor:Add(RunService.Heartbeat:Connect(onHeartbeat))
 		else
+			finishLiveRecording()
 			pluginJanitor:Cleanup()
 			table.clear(watched)
 		end
 	end))
 
 	plugin.Unloading:Connect(function()
+		finishLiveRecording()
 		pluginJanitor:Cleanup()
 	end)
 end

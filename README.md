@@ -8,9 +8,9 @@
 
 ## Features
 
-- **Non-destructive cutting** — select a block Part and click **Add Cut Box** to turn it into a cut model with a translucent red cutter box inside.
+- **Non-destructive cutting** — select the part to cut, then the part(s) to cut with, and click **Add Cutters**. The target becomes a cut model and your parts become invisible cutter boxes outlined in red.
 - **Live editing** — move, rotate, or resize cutter boxes with the standard Studio tools; the cut geometry regenerates in real time while the widget is open.
-- **Multiple cutters** — add as many cut boxes to a model as you want; delete a cutter part to remove its cut.
+- **Multiple cutters** — adopt as many cutter parts per model as you want, before or after the first cut; delete a cutter to remove its cut.
 - **Attribute-driven** — the source part's size and visual properties are stored as attributes (`BoxCutterSourceSize`, `BoxCutterProp_*`), so cut models survive saves and can be re-edited any time.
 - **Bake** — strips cutters and plugin attributes, leaving plain geometry; optionally unions the result into a single UnionOperation.
 - **Undo support** — all operations are recorded with `ChangeHistoryService`; live drag updates append to the existing waypoint so undo history isn't flooded.
@@ -27,11 +27,12 @@
 ## Usage
 
 1. Open the **Box Cutter** widget from the toolbar.
-2. Select a block Part in the viewport.
-3. Click **Add Cut Box** — the part becomes a cut model and the new cutter box is selected.
-4. Move/rotate/resize the red cutter with the standard Studio tools; the hole follows live.
-5. Select the model and click **Add Cut Box** again for additional holes.
-6. When you're happy, click **Bake Selection** to strip the plugin data (optionally unioning the result).
+2. Place a block Part where you want the hole, overlapping the part you want to cut.
+3. Select the part to cut first, then Ctrl+click the cutter part(s).
+4. Click **Add Cutters** — the target becomes a cut model and your parts become red-outlined cutters.
+5. Move/rotate/resize the cutters with the standard Studio tools; the hole follows live.
+6. To add more holes later, select the cut model (or any of its cutters) first, then Ctrl+click new parts and press **Add Cutters** again.
+7. When you're happy, click **Bake Selection** to strip the plugin data (optionally unioning the result).
 
 ## Development
 

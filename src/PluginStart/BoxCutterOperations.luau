@@ -3,8 +3,9 @@
 
 	A "cut model" replaces the source part and contains:
 	- A "Geometry" folder holding the solid result parts
-	- One or more "Cutter" parts (translucent red boxes) the user can move,
-	  rotate, and resize with the standard Studio tools
+	- One or more "Cutter" parts: user-placed boxes adopted by the plugin
+	  (made invisible and non-physical, outlined with a SelectionBox) that
+	  can be moved, rotated, and resized with the standard Studio tools
 
 	The source box dimensions are stored as the BoxCutterSourceSize attribute
 	and the source visual properties are stored as BoxCutterProp_* attributes,
@@ -256,9 +257,8 @@ function BoxCutterOperations.regenerate(model: Model)
 	updatePivot(model, sourceCF)
 end
 
--- Converts a plain part into a cut model with one initial cutter.
--- Returns the model and the new cutter.
-function BoxCutterOperations.setup(part: BasePart): (Model, BasePart)
+-- Converts a plain part into a cut model with no cutters yet.
+function BoxCutterOperations.setup(part: BasePart): Model
 	local sourceCF = part.CFrame
 
 	local model = Instance.new("Model")
@@ -280,41 +280,34 @@ function BoxCutterOperations.setup(part: BasePart): (Model, BasePart)
 
 	updatePivot(model, sourceCF)
 
-	local cutter = BoxCutterOperations.addCutter(model)
-	BoxCutterOperations.regenerate(model)
-
-	return model, cutter
+	return model
 end
 
--- Adds a new cutter box centered on the model pivot.
-function BoxCutterOperations.addCutter(model: Model): BasePart
-	local sourceSize = model:GetAttribute(ATTRS.SourceSize)
-	if typeof(sourceSize) ~= "Vector3" then
-		sourceSize = Vector3.one
+-- Adopts a user-placed part as a cutter: invisible, non-physical, and
+-- outlined with a SelectionBox so the cut region stays visible.
+function BoxCutterOperations.adoptCutter(model: Model, part: BasePart): BasePart
+	part.Name = Constants.CutterName
+	part:SetAttribute(ATTRS.Cutter, true)
+	part.Transparency = 1
+	part.Anchored = true
+	part.CanCollide = false
+	part.CanQuery = false
+	part.CanTouch = false
+	part.CastShadow = false
+	part.Parent = model
+
+	if not part:FindFirstChild("CutterBox") then
+		local box = Instance.new("SelectionBox")
+		box.Name = "CutterBox"
+		box.Color3 = Constants.CutterColor
+		box.SurfaceColor3 = Constants.CutterColor
+		box.SurfaceTransparency = 0.92
+		box.LineThickness = 0.02
+		box.Adornee = part
+		box.Parent = part
 	end
-	local scaled = sourceSize * Constants.DefaultCutterScale
 
-	local cutter = Instance.new("Part")
-	cutter.Name = Constants.CutterName
-	cutter:SetAttribute(ATTRS.Cutter, true)
-	cutter.Size = Vector3.new(
-		math.max(scaled.X, Constants.MinCutterSize),
-		math.max(scaled.Y, Constants.MinCutterSize),
-		math.max(scaled.Z, Constants.MinCutterSize)
-	)
-	cutter.CFrame = model:GetPivot()
-	cutter.Color = Constants.CutterColor
-	cutter.Transparency = Constants.CutterTransparency
-	cutter.Material = Enum.Material.SmoothPlastic
-	cutter.TopSurface = Enum.SurfaceType.Smooth
-	cutter.BottomSurface = Enum.SurfaceType.Smooth
-	cutter.Anchored = true
-	cutter.CanCollide = false
-	cutter.CanTouch = false
-	cutter.CastShadow = false
-	cutter.Parent = model
-
-	return cutter
+	return part
 end
 
 -- Removes cutters and all plugin attributes, leaving plain geometry.
