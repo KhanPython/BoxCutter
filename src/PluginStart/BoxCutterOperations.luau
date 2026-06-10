@@ -200,6 +200,62 @@ local function subtractFromAll(boxes: { Box }, cmin: Vector3, cmax: Vector3): { 
 	return result
 end
 
+local MERGE_EPS = 1e-4
+
+local function approxEq(x: number, y: number): boolean
+	return math.abs(x - y) <= MERGE_EPS
+end
+
+local MERGE_AXES = {
+	{ "X", "Y", "Z" },
+	{ "Y", "X", "Z" },
+	{ "Z", "X", "Y" },
+}
+
+-- Returns the union of `a` and `b` if it is itself a box: identical extents
+-- on two axes and contiguous (or overlapping) on the third.
+local function tryMerge(a: Box, b: Box): Box?
+	for _, axes in MERGE_AXES do
+		local axis, o1, o2 = axes[1], axes[2], axes[3]
+		if
+			approxEq((a.min :: any)[o1], (b.min :: any)[o1])
+			and approxEq((a.max :: any)[o1], (b.max :: any)[o1])
+			and approxEq((a.min :: any)[o2], (b.min :: any)[o2])
+			and approxEq((a.max :: any)[o2], (b.max :: any)[o2])
+			and (a.max :: any)[axis] + MERGE_EPS >= (b.min :: any)[axis]
+			and (b.max :: any)[axis] + MERGE_EPS >= (a.min :: any)[axis]
+		then
+			return { min = a.min:Min(b.min), max = a.max:Max(b.max) }
+		end
+	end
+	return nil
+end
+
+-- Greedily coalesces aligned fragments (produced by overlapping cutters)
+-- into elongated boxes so fewer parts are generated.
+local function mergeBoxes(boxes: { Box }): { Box }
+	local changed = true
+	while changed do
+		changed = false
+		local i = 1
+		while i <= #boxes do
+			local j = i + 1
+			while j <= #boxes do
+				local merged = tryMerge(boxes[i], boxes[j])
+				if merged then
+					boxes[i] = merged
+					table.remove(boxes, j)
+					changed = true
+				else
+					j += 1
+				end
+			end
+			i += 1
+		end
+	end
+	return boxes
+end
+
 local function updatePivot(model: Model, sourceCF: CFrame)
 	local primary = getGeometryFolder(model):FindFirstChildWhichIsA("BasePart")
 	if primary then
@@ -226,6 +282,7 @@ function BoxCutterOperations.regenerate(model: Model)
 		local cmin, cmax = cutterLocalAABB(sourceCF, cutter)
 		boxes = subtractFromAll(boxes, cmin, cmax)
 	end
+	boxes = mergeBoxes(boxes)
 
 	local finalBoxes = {}
 	for _, box in boxes do
@@ -250,8 +307,9 @@ function BoxCutterOperations.regenerate(model: Model)
 			part.Parent = folder
 		end
 	end
+	-- Parent to nil instead of destroying so undo can restore these parts
 	for index = #finalBoxes + 1, #existing do
-		existing[index]:Destroy()
+		existing[index].Parent = nil
 	end
 
 	updatePivot(model, sourceCF)
@@ -312,9 +370,10 @@ end
 
 -- Removes cutters and all plugin attributes, leaving plain geometry.
 -- Returns the resulting instance (part, union, or model).
+-- Removed instances are parented to nil, never destroyed, so undo works.
 function BoxCutterOperations.bake(model: Model, shouldUnion: boolean): Instance
 	for _, cutter in BoxCutterOperations.getCutters(model) do
-		cutter:Destroy()
+		cutter.Parent = nil
 	end
 	for name in model:GetAttributes() do
 		if name:sub(1, 9) == "BoxCutter" then
@@ -327,7 +386,7 @@ function BoxCutterOperations.bake(model: Model, shouldUnion: boolean): Instance
 		part.PivotOffset = CFrame.identity
 		part.Parent = model
 	end
-	getGeometryFolder(model):Destroy()
+	getGeometryFolder(model).Parent = nil
 
 	if shouldUnion and #parts >= 2 then
 		local primary = table.remove(parts, 1) :: BasePart
@@ -337,7 +396,7 @@ function BoxCutterOperations.bake(model: Model, shouldUnion: boolean): Instance
 		if ok and unionPart then
 			unionPart.Name = model.Name
 			unionPart.Parent = model.Parent
-			model:Destroy()
+			model.Parent = nil
 			return unionPart
 		end
 		warn("BoxCutter: UnionAsync failed for " .. model.Name)
@@ -348,7 +407,7 @@ function BoxCutterOperations.bake(model: Model, shouldUnion: boolean): Instance
 		local single = parts[1]
 		single.Name = model.Name
 		single.Parent = model.Parent
-		model:Destroy()
+		model.Parent = nil
 		return single
 	end
 
