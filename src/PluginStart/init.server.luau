@@ -184,18 +184,20 @@ local function snapshotModel(model: Model): { [any]: any }
 	return state
 end
 
+-- Hot path: runs every Heartbeat for each watched model, so it scans the
+-- children in one pass instead of building a cutter list first.
 local function isModelDirty(model: Model, state: { [any]: any }): boolean
-	local cutters = Operations.getCutters(model)
-	if #cutters ~= state.cutterCount then
-		return true
-	end
-	for _, cutter in cutters do
-		local cached = state[cutter]
-		if not cached or cached.cf ~= cutter.CFrame or cached.size ~= cutter.Size then
-			return true
+	local cutterCount = 0
+	for _, child in model:GetChildren() do
+		if child:IsA("BasePart") and child:GetAttribute(Constants.Attributes.Cutter) == true then
+			cutterCount += 1
+			local cached = state[child]
+			if not cached or cached.cf ~= child.CFrame or cached.size ~= child.Size then
+				return true
+			end
 		end
 	end
-	return false
+	return cutterCount ~= state.cutterCount
 end
 
 -- Undo/redo restores cutters AND geometry together - they were captured in
@@ -232,7 +234,7 @@ local function updateSelection()
 	-- mirroring Studio's model-selection convention.
 	local resolvedSelection, seenResolved = {}, {}
 	local needsRedirect = false
-	for _, item in ipairs(newSelection) do
+	for _, item in newSelection do
 		local resolved: Instance = item
 		if Operations.isGeometryPart(item) then
 			resolved = item.Parent.Parent :: Model
@@ -259,7 +261,7 @@ local function updateSelection()
 		end
 	end
 
-	for _, item in ipairs(resolvedSelection) do
+	for _, item in resolvedSelection do
 		if Operations.isCutModel(item) then
 			addModel(item)
 		elseif Operations.isCutter(item) then
@@ -362,7 +364,7 @@ local function doAddCutters()
 	local model: Model? = nil
 	withRecording("BoxCutterAdd", "Add Cutters", function()
 		model = if currentTarget:IsA("Model") then currentTarget else Operations.setup(currentTarget)
-		for _, part in ipairs(pending) do
+		for _, part in pending do
 			table.insert(adopted, Operations.adoptCutter(model :: Model, part, showCutterOutlines:get()))
 		end
 		Operations.regenerate(model :: Model)
@@ -390,7 +392,7 @@ local function doBake()
 
 	local results = {}
 	withRecording("BoxCutterBake", "Bake Cut Models", function()
-		for _, model in ipairs(models) do
+		for _, model in models do
 			watched[model] = nil
 			local result = Operations.bake(model, shouldUnion)
 			if result then

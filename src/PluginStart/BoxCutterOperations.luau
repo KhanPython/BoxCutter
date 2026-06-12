@@ -353,10 +353,11 @@ function BoxCutterOperations.regenerate(model: Model)
 	-- value a clean "size at scale 1" record while the rebuilt body matches
 	-- the scaled cutters.
 	sourceSize *= model:GetScale()
+	local half = sourceSize / 2
 	local sourceCF = model:GetPivot()
 	local folder = getGeometryFolder(model)
 
-	local boxes: { Box } = { { min = -sourceSize / 2, max = sourceSize / 2 } }
+	local boxes: { Box } = { { min = -half, max = half } }
 	for _, cutter in BoxCutterOperations.getCutters(model) do
 		local cmin, cmax = cutterLocalAABB(sourceCF, cutter)
 		boxes = subtractFromAll(boxes, cmin, cmax)
@@ -382,7 +383,7 @@ function BoxCutterOperations.regenerate(model: Model)
 		part.PivotOffset = CFrame.identity
 		part.Size = box.max - box.min
 		part.CFrame = sourceCF * CFrame.new((box.min + box.max) / 2)
-		applyTextureOffsets(part, box, sourceSize / 2)
+		applyTextureOffsets(part, box, half)
 		if not existing[index] then
 			part.Parent = folder
 		end
@@ -422,7 +423,10 @@ function BoxCutterOperations.setup(part: BasePart): Model
 end
 
 -- Adopts a user-placed part as a cutter: invisible, non-physical, and
--- outlined with a SelectionBox so the cut region stays visible.
+-- outlined with a SelectionBox so the cut region stays visible. Anything the
+-- part carried (Textures, Decals, welds, scripts, ...) is removed - a cutter
+-- is pure geometry and stray children would linger invisibly inside the cut
+-- model. Removal is parent-to-nil so undo can restore them.
 function BoxCutterOperations.adoptCutter(model: Model, part: BasePart, outlineVisible: boolean?): BasePart
 	part.Name = Constants.CutterName
 	part:SetAttribute(ATTRS.Cutter, true)
@@ -438,7 +442,8 @@ function BoxCutterOperations.adoptCutter(model: Model, part: BasePart, outlineVi
 	for _, child in part:GetChildren() do
 		if child:HasTag(Constants.CutterBoxTag) then
 			hasOutline = true
-			break
+		else
+			child.Parent = nil
 		end
 	end
 
@@ -517,17 +522,20 @@ function BoxCutterOperations.bake(model: Model, shouldUnion: boolean): Instance?
 
 	if shouldUnion and #parts >= 2 then
 		local primary = table.remove(parts, 1) :: BasePart
-		local ok, unionPart = pcall(function()
+		local ok, unionOrErr = pcall(function()
 			return primary:UnionAsync(parts)
 		end)
-		if ok and unionPart then
-			unionPart.Name = model.Name
-			unionPart.Parent = parent
+		if ok and unionOrErr then
+			unionOrErr.Name = model.Name
+			unionOrErr.Parent = parent
 			result.Parent = nil
-			result = unionPart
+			result = unionOrErr
 		else
-			warn("BoxCutter: UnionAsync failed for " .. model.Name)
-			table.insert(parts, 1, primary)
+			-- The un-unioned parts model is already parented, so the bake still
+			-- succeeds; the user just gets separate parts instead of one union.
+			warn(
+				"BoxCutter: UnionAsync failed for " .. model.Name .. (if ok then "" else " - " .. tostring(unionOrErr))
+			)
 		end
 	end
 

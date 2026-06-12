@@ -40,15 +40,16 @@ return function(props: PluginGuiProperties)
 		)
 	)
 
-	for _, propertyName in pairs(COMPONENT_ONLY_PROPERTIES) do
-		props[propertyName] = nil
+	local hydrateProps = table.clone(props)
+	for _, propertyName in COMPONENT_ONLY_PROPERTIES do
+		hydrateProps[propertyName] = nil
 	end
 
-	props.Title = props.Name
+	hydrateProps.Title = props.Name
 
 	if typeof(props.Enabled) == "table" and props.Enabled.kind == "Value" then
 		props.Enabled:set(newWidget.Enabled)
 	end
 
-	return Hydrate(newWidget)(props)
+	return Hydrate(newWidget)(hydrateProps)
 end
