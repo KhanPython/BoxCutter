@@ -5,10 +5,6 @@ return {
 	-- Smallest dimension a generated solid part may have on any axis
 	MinPartSize = 0.05,
 
-	-- Seconds of cutter inactivity before the live-edit recording is
-	-- committed as a single undo waypoint
-	LiveCommitDelay = 0.3,
-
 	-- Cutters are invisible; this colors their SelectionBox outline
 	CutterColor = Color3.fromRGB(255, 80, 80),
 
@@ -34,4 +30,8 @@ return {
 	-- CollectionService tag identifying the outline SelectionBoxes the plugin
 	-- places on cutters; survives renames and avoids workspace-wide scans
 	CutterBoxTag = "BoxCutterOutline",
+
+	-- CollectionService tag on every cut model, so all of them can be found
+	-- after an undo/redo without scanning the whole place
+	CutModelTag = "BoxCutterModel",
 }

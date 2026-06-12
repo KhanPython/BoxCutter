@@ -402,6 +402,7 @@ function BoxCutterOperations.setup(part: BasePart): Model
 
 	local model = Instance.new("Model")
 	model.Name = part.Name .. "_Cut"
+	model:AddTag(Constants.CutModelTag)
 	model:SetAttribute(ATTRS.SourceSize, part.Size)
 	storeProperties(model, part)
 
@@ -474,8 +475,9 @@ function BoxCutterOperations.setOutlinesVisible(visible: boolean)
 	end
 end
 
--- Bakes the cut into plain geometry and returns the result (part, union,
--- or model of parts), or nil if the model had no geometry.
+-- Bakes the cut into plain geometry and returns the resulting instances:
+-- a single part, a union, a model of parts, or - with `groupResult` off -
+-- the loose parts themselves. Empty if the model had no geometry.
 --
 -- The result is built from CLONES and the cut model is then parented to nil
 -- in one step, cutters and all. Undo therefore only has to reverse a single
@@ -483,7 +485,7 @@ end
 -- it was - reparenting cutters and geometry piecemeal proved unreliable:
 -- Studio restored only part of the structure on undo. The model is never
 -- destroyed, so undo can always resurrect it.
-function BoxCutterOperations.bake(model: Model, shouldUnion: boolean): Instance?
+function BoxCutterOperations.bake(model: Model, shouldUnion: boolean, groupResult: boolean): { Instance }
 	local parts = {}
 	for _, part in getGeometryParts(model) do
 		local clone = part:Clone()
@@ -499,25 +501,32 @@ function BoxCutterOperations.bake(model: Model, shouldUnion: boolean): Instance?
 
 	if #parts == 0 then
 		model.Parent = nil
-		return nil
+		return {}
 	end
 
 	local parent = model.Parent
-	local result: Instance
+	local results: { Instance }
 
 	if #parts == 1 then
 		local single = parts[1]
 		single.Name = model.Name
 		single.Parent = parent
-		result = single
-	else
+		results = { single }
+	elseif groupResult then
 		local container = Instance.new("Model")
 		container.Name = model.Name
 		for _, part in parts do
 			part.Parent = container
 		end
 		container.Parent = parent
-		result = container
+		results = { container }
+	else
+		results = {}
+		for _, part in parts do
+			part.Name = model.Name
+			part.Parent = parent
+			table.insert(results, part)
+		end
 	end
 
 	if shouldUnion and #parts >= 2 then
@@ -528,10 +537,12 @@ function BoxCutterOperations.bake(model: Model, shouldUnion: boolean): Instance?
 		if ok and unionOrErr then
 			unionOrErr.Name = model.Name
 			unionOrErr.Parent = parent
-			result.Parent = nil
-			result = unionOrErr
+			for _, result in results do
+				result.Parent = nil
+			end
+			results = { unionOrErr }
 		else
-			-- The un-unioned parts model is already parented, so the bake still
+			-- The un-unioned parts are already parented, so the bake still
 			-- succeeds; the user just gets separate parts instead of one union.
 			warn(
 				"BoxCutter: UnionAsync failed for " .. model.Name .. (if ok then "" else " - " .. tostring(unionOrErr))
@@ -540,7 +551,7 @@ function BoxCutterOperations.bake(model: Model, shouldUnion: boolean): Instance?
 	end
 
 	model.Parent = nil
-	return result
+	return results
 end
 
 return BoxCutterOperations

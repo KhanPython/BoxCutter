@@ -1,5 +1,6 @@
 local Selection = game:GetService("Selection")
 local ChangeHistoryService = game:GetService("ChangeHistoryService")
+local CollectionService = game:GetService("CollectionService")
 local RunService = game:GetService("RunService")
 local CoreGui = game:GetService("CoreGui")
 
@@ -36,6 +37,7 @@ local doNothing = Fusion.doNothing
 
 local widgetsEnabled = Value(false)
 local unionOnBake = Value(false)
+local groupOnBake = Value(true) -- wrap a multi-part bake in a Model; off leaves loose parts
 local showCutterOutlines = Value(true)
 local target = Value(nil) -- instance chosen via Set Target: block Part or cut model
 local targetAncestryClock = Value(0) -- bumped whenever the target's ancestry changes
@@ -104,48 +106,40 @@ end
 -- model -> { cutterCount: number, [BasePart]: { cf: CFrame, size: Vector3 } }
 local watched: { [Model]: { [any]: any } } = {}
 
--- History model: EVERY change is captured in a ChangeHistory recording.
--- Roblox undo is delta-based - each waypoint stores old/new values captured
--- at recording time - so unrecorded edits make later waypoints restore onto
--- state they never observed (that is how cutters went missing after a bake
--- undo). To keep the history clean, a whole drag session coalesces into one
--- recording committed once the cutters go idle; and while Studio's own
--- move/scale gesture holds the single global recording, our regeneration
--- folds into that same waypoint, so undoing the cutter move restores the
--- cut in the same step.
-local liveRecording: string? = nil
-local lastDirtyClock = 0
-
-local function finishLiveRecording()
-	if liveRecording then
-		local recording = liveRecording
-		liveRecording = nil
-		-- pcall: a stale identifier (e.g. after a plugin hot reload) must not
-		-- abort the caller, or the next recording could never begin
-		local ok = pcall(function()
-			ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.Commit)
-		end)
-		if not ok then
-			-- A recording that fails to finish stays open and silently absorbs
-			-- every later edit, so no new waypoints form and undo applies stale
-			-- deltas onto state they never observed. Unrecoverable from a
-			-- plugin; the user must know.
-			warn("BoxCutter: failed to commit a live recording - undo may be unreliable until Studio restarts")
-		end
+-- History model: only USER state lives in the undo history - cutters, the
+-- model and its attributes - captured by Studio's own gestures (move, scale,
+-- delete) or by our explicit recordings (Add Cutters, Bake). The generated
+-- geometry is DERIVED state: a pure function of the cutters, deliberately
+-- kept OUT of the history. regenerateQuietly never opens a recording, so
+-- rebuilding the cut never creates a waypoint and never clears the redo
+-- stack. Undo and redo therefore move only the user state, and
+-- onHistoryChanged re-derives every cut model from whatever state history
+-- just restored - geometry can never get out of step with its cutters, no
+-- matter how the timeline is walked, and every user action stays exactly
+-- one waypoint.
+--
+-- When a Studio gesture happens to hold its recording open while we rebuild
+-- (dragging a cutter), the engine captures the rebuild into that waypoint.
+-- That is harmless: those geometry deltas travel together with their cutter
+-- deltas, and the post-undo re-derivation is idempotent.
+local function regenerateQuietly(model: Model): boolean
+	local ok, err = pcall(Operations.regenerate, model)
+	if not ok then
+		warn("BoxCutter: failed to update cut for " .. model:GetFullName() .. " - " .. tostring(err))
 	end
+	return ok
 end
 
--- Runs `callback` inside a ChangeHistory recording. The recording is always
--- finished (Commit on success, Cancel on error) so a thrown error can never
--- leave a recording open and block every future one. If a recording cannot
--- begin because a foreign one is open (a Studio gesture, another plugin, or
--- a recording stuck after a failed finish), the operation is REFUSED: edits
--- made then would fold into that recording and never form a waypoint of
--- their own, so a later undo would apply an older waypoint's deltas onto
--- state it never observed (cutters and attributes vanish). Refusing is safe
--- - every caller is a user action that can simply be retried. Never yields.
+-- Runs `callback` inside a ChangeHistory recording - used only for real user
+-- operations (Add Cutters, Bake) that must form a waypoint of their own. The
+-- recording is always finished (Commit on success, Cancel on error) so a
+-- thrown error can never leave a recording open and block every future one.
+-- If a recording cannot begin because a foreign one is open (a Studio
+-- gesture or another plugin), the operation is REFUSED: edits made then
+-- would fold into that recording instead of forming their own waypoint.
+-- Refusing is safe - every caller is a user action that can simply be
+-- retried. Never yields.
 local function withRecording(name: string, displayName: string, callback: () -> ())
-	finishLiveRecording()
 	local recording = ChangeHistoryService:TryBeginRecording(name, displayName)
 
 	if not recording and ChangeHistoryService:IsRecordingInProgress() then
@@ -200,16 +194,21 @@ local function isModelDirty(model: Model, state: { [any]: any }): boolean
 	return cutterCount ~= state.cutterCount
 end
 
--- Undo/redo restores cutters AND geometry together - they were captured in
--- the same waypoint - so the watched snapshots must be refreshed without
--- regenerating. Treating the restored cutter transforms as a user edit would
--- commit a brand-new waypoint on top of the undone state, and any new
--- waypoint erases the redo stack: undo would work once and redo never would.
--- Deferred because the snapshot must observe the world AFTER the history
--- deltas have been applied, regardless of when the event fires relative to
--- them; the deferred thread still resumes before the next Heartbeat sweep.
-local function resyncWatched()
+-- After any undo or redo the cutters are authoritative: re-derive every cut
+-- model in the place from them, unrecorded (see the history model above).
+-- This is what makes a single undo of "delete cutter" bring the hole back:
+-- the waypoint only restores the cutter, and the cut is recomputed here.
+-- Deferred so the rebuild observes the world AFTER the history deltas have
+-- been applied; the deferred thread still resumes before the next Heartbeat
+-- sweep, so the watched snapshots are also refreshed in time to not be
+-- mistaken for new user edits.
+local function onHistoryChanged()
 	task.defer(function()
+		for _, model in CollectionService:GetTagged(Constants.CutModelTag) do
+			if Operations.isCutModel(model) then
+				regenerateQuietly(model)
+			end
+		end
 		for model in watched do
 			if model.Parent then
 				watched[model] = snapshotModel(model)
@@ -257,6 +256,9 @@ local function updateSelection()
 	local function addModel(model: Model)
 		if not seenModels[model] then
 			seenModels[model] = true
+			-- Models from saves made before the tag existed get tagged on
+			-- first contact, so onHistoryChanged can always find them
+			model:AddTag(Constants.CutModelTag)
 			table.insert(models, model)
 		end
 	end
@@ -290,7 +292,7 @@ local function updateSelection()
 		newWatched[model] = watched[model] or snapshotModel(model)
 	end
 
-	-- A model leaving the watch set may still owe a regeneration: deleting a
+	-- A model leaving the watch set may still owe a re-derivation: deleting a
 	-- cutter empties the selection, which lands here before Heartbeat ever
 	-- sees the model as dirty - without this catch-up the hole stays cut.
 	local dropped = {}
@@ -302,47 +304,24 @@ local function updateSelection()
 	watched = newWatched
 
 	for _, model in dropped do
-		withRecording("BoxCutterCatchUp", "Update Cut", function()
-			Operations.regenerate(model)
-		end)
+		regenerateQuietly(model)
 	end
 end
 
 local function onHeartbeat()
-	local anyDirty = false
 	for model, state in watched do
 		if not model.Parent then
 			watched[model] = nil
 			continue
 		end
 		if isModelDirty(model, state) then
-			anyDirty = true
-			if not liveRecording then
-				liveRecording = ChangeHistoryService:TryBeginRecording("BoxCutterLive", "Update Cut")
-				if not liveRecording and not ChangeHistoryService:IsRecordingInProgress() then
-					-- Nothing would capture the change; mutating now would
-					-- desync the history. Retry next frame. (A foreign
-					-- recording - usually Studio's own drag gesture - does
-					-- capture our changes, folding the cut into the same
-					-- undo step as the cutter move.)
-					continue
-				end
-			end
-			local ok, err = pcall(Operations.regenerate, model)
-			if not ok then
+			if regenerateQuietly(model) then
+				watched[model] = snapshotModel(model)
+			else
 				-- Stop watching so one bad model can't spam errors every frame
 				watched[model] = nil
-				warn("BoxCutter: live update failed: " .. tostring(err))
-				continue
 			end
-			watched[model] = snapshotModel(model)
 		end
-	end
-
-	if anyDirty then
-		lastDirtyClock = os.clock()
-	elseif liveRecording and os.clock() - lastDirtyClock > Constants.LiveCommitDelay then
-		finishLiveRecording()
 	end
 end
 
@@ -389,13 +368,13 @@ local function doBake()
 	end
 
 	local shouldUnion = unionOnBake:get()
+	local shouldGroup = groupOnBake:get()
 
 	local results = {}
 	withRecording("BoxCutterBake", "Bake Cut Models", function()
 		for _, model in models do
 			watched[model] = nil
-			local result = Operations.bake(model, shouldUnion)
-			if result then
+			for _, result in Operations.bake(model, shouldUnion, shouldGroup) do
 				table.insert(results, result)
 			end
 		end
@@ -543,10 +522,17 @@ do
 					LayoutOrder = 8,
 				}),
 
+				Checkbox({
+					Text = "Group result into a Model",
+					Value = groupOnBake,
+					Size = UDim2.new(1, 0, 0, 20),
+					LayoutOrder = 9,
+				}),
+
 				Button({
 					Text = "Bake Selection",
 					Size = UDim2.new(1, 0, 0, 30),
-					LayoutOrder = 9,
+					LayoutOrder = 10,
 					Enabled = Computed(function()
 						return #selectedModels:get() > 0
 					end),
@@ -559,7 +545,7 @@ do
 					TextSize = 15,
 					TextWrapped = true,
 					TextColorStyle = Enum.StudioStyleGuideColor.DimmedText,
-					LayoutOrder = 10,
+					LayoutOrder = 11,
 				}),
 			},
 		}),
@@ -594,19 +580,22 @@ do
 		if widgetsEnabled:get() then
 			task.spawn(updateSelection)
 			pluginJanitor:Add(Selection.SelectionChanged:Connect(updateSelection))
-			pluginJanitor:Add(ChangeHistoryService.OnUndo:Connect(resyncWatched))
-			pluginJanitor:Add(ChangeHistoryService.OnRedo:Connect(resyncWatched))
 			pluginJanitor:Add(RunService.Heartbeat:Connect(onHeartbeat))
 		else
-			finishLiveRecording()
 			pluginJanitor:Cleanup()
 			table.clear(watched)
 		end
 	end))
 
+	-- History can be walked at any time, widget open or not, so the re-derive
+	-- hooks outlive the widget gate and last for the plugin's whole life.
+	local undoConnection = ChangeHistoryService.OnUndo:Connect(onHistoryChanged)
+	local redoConnection = ChangeHistoryService.OnRedo:Connect(onHistoryChanged)
+
 	plugin.Unloading:Connect(function()
-		finishLiveRecording()
 		pluginJanitor:Cleanup()
+		undoConnection:Disconnect()
+		redoConnection:Disconnect()
 		-- Lives in CoreGui, so nothing else cleans it up on unload
 		targetBox:Destroy()
 		if targetConnection then
