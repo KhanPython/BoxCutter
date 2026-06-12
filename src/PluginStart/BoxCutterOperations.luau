@@ -17,6 +17,8 @@
 	2 along X, then 2 along Z, then 2 along Y within the core.
 ]]
 
+local CollectionService = game:GetService("CollectionService")
+
 local Constants = require(script.Parent.Constants)
 
 local ATTRS = Constants.Attributes
@@ -270,6 +272,64 @@ local function mergeBoxes(boxes: { Box }): { Box }
 	return boxes
 end
 
+-- How a Texture's UV space maps onto each face in part-local coordinates:
+-- which axis carries U and V, and whether the texture's origin corner sits
+-- on the positive (max) or negative (min) side of that axis. Derived from
+-- the viewed-from-outside surface convention (U right, V down); if a face
+-- ever tiles misaligned in practice, flipping its FromMax flag is the fix.
+local FACE_UV: { [Enum.NormalId]: { U: string, UFromMax: boolean, V: string, VFromMax: boolean } } = {
+	[Enum.NormalId.Front] = { U = "X", UFromMax = true, V = "Y", VFromMax = true },
+	[Enum.NormalId.Back] = { U = "X", UFromMax = false, V = "Y", VFromMax = true },
+	[Enum.NormalId.Right] = { U = "Z", UFromMax = true, V = "Y", VFromMax = true },
+	[Enum.NormalId.Left] = { U = "Z", UFromMax = false, V = "Y", VFromMax = true },
+	[Enum.NormalId.Top] = { U = "X", UFromMax = false, V = "Z", VFromMax = false },
+	[Enum.NormalId.Bottom] = { U = "X", UFromMax = true, V = "Z", VFromMax = false },
+}
+
+-- Studs from the source face's texture origin to the fragment face's texture
+-- origin along one axis. The source box is centered on the origin, so its
+-- min corner is -half and its max corner is +half.
+local function originDelta(axis: string, fromMax: boolean, box: Box, half: Vector3): number
+	if fromMax then
+		return (half :: any)[axis] - (box.max :: any)[axis]
+	end
+	return (box.min :: any)[axis] + (half :: any)[axis]
+end
+
+local function wrapOffset(offset: number, tile: number): number
+	return if tile > 0 then offset % tile else offset
+end
+
+-- Reads the texture's offset on the uncut source, recording it on first
+-- sight so later regenerations re-derive from the original anchor instead
+-- of stacking adjustments on top of adjusted values.
+local function getBaseOffset(texture: Texture, attr: string, current: number): number
+	local base = texture:GetAttribute(attr)
+	if typeof(base) ~= "number" then
+		base = current
+		texture:SetAttribute(attr, base)
+	end
+	return base :: number
+end
+
+-- Shifts every Texture on a fragment so the pattern lines up exactly as it
+-- did on the uncut source box. `box` is the fragment in source-local space.
+local function applyTextureOffsets(part: BasePart, box: Box, half: Vector3)
+	for _, texture in part:GetChildren() do
+		if not texture:IsA("Texture") then
+			continue
+		end
+		local map = FACE_UV[texture.Face]
+		if not map then
+			continue
+		end
+		local baseU = getBaseOffset(texture, ATTRS.TextureBaseOffsetU, texture.OffsetStudsU)
+		local baseV = getBaseOffset(texture, ATTRS.TextureBaseOffsetV, texture.OffsetStudsV)
+		texture.OffsetStudsU = wrapOffset(baseU + originDelta(map.U, map.UFromMax, box, half), texture.StudsPerTileU)
+		texture.OffsetStudsV = wrapOffset(baseV + originDelta(map.V, map.VFromMax, box, half), texture.StudsPerTileV)
+	end
+end
+
 local function updatePivot(model: Model, sourceCF: CFrame)
 	local primary = getGeometryFolder(model):FindFirstChildWhichIsA("BasePart")
 	if primary then
@@ -288,6 +348,11 @@ function BoxCutterOperations.regenerate(model: Model)
 	if typeof(sourceSize) ~= "Vector3" then
 		return
 	end
+	-- Studio's scale tool scales every descendant part but cannot scale an
+	-- attribute; GetScale() carries the applied factor, keeping the stored
+	-- value a clean "size at scale 1" record while the rebuilt body matches
+	-- the scaled cutters.
+	sourceSize *= model:GetScale()
 	local sourceCF = model:GetPivot()
 	local folder = getGeometryFolder(model)
 
@@ -317,6 +382,7 @@ function BoxCutterOperations.regenerate(model: Model)
 		part.PivotOffset = CFrame.identity
 		part.Size = box.max - box.min
 		part.CFrame = sourceCF * CFrame.new((box.min + box.max) / 2)
+		applyTextureOffsets(part, box, sourceSize / 2)
 		if not existing[index] then
 			part.Parent = folder
 		end
@@ -357,7 +423,7 @@ end
 
 -- Adopts a user-placed part as a cutter: invisible, non-physical, and
 -- outlined with a SelectionBox so the cut region stays visible.
-function BoxCutterOperations.adoptCutter(model: Model, part: BasePart): BasePart
+function BoxCutterOperations.adoptCutter(model: Model, part: BasePart, outlineVisible: boolean?): BasePart
 	part.Name = Constants.CutterName
 	part:SetAttribute(ATTRS.Cutter, true)
 	part.Transparency = 1
@@ -368,13 +434,23 @@ function BoxCutterOperations.adoptCutter(model: Model, part: BasePart): BasePart
 	part.CastShadow = false
 	part.Parent = model
 
-	if not part:FindFirstChild("CutterBox") then
+	local hasOutline = false
+	for _, child in part:GetChildren() do
+		if child:HasTag(Constants.CutterBoxTag) then
+			hasOutline = true
+			break
+		end
+	end
+
+	if not hasOutline then
 		local box = Instance.new("SelectionBox")
-		box.Name = "CutterBox"
+		box.Name = Constants.CutterBoxName
+		box:AddTag(Constants.CutterBoxTag)
 		box.Color3 = Constants.CutterColor
 		box.SurfaceColor3 = Constants.CutterColor
 		box.SurfaceTransparency = 0.92
 		box.LineThickness = 0.02
+		box.Visible = outlineVisible ~= false
 		box.Adornee = part
 		box.Parent = part
 	end
@@ -382,25 +458,62 @@ function BoxCutterOperations.adoptCutter(model: Model, part: BasePart): BasePart
 	return part
 end
 
--- Removes cutters and all plugin attributes, leaving plain geometry.
--- Returns the resulting instance (part, union, or model).
--- Removed instances are parented to nil, never destroyed, so undo works.
-function BoxCutterOperations.bake(model: Model, shouldUnion: boolean): Instance
-	for _, cutter in BoxCutterOperations.getCutters(model) do
-		cutter.Parent = nil
-	end
-	for name in model:GetAttributes() do
-		if name:sub(1, 9) == "BoxCutter" then
-			model:SetAttribute(name, nil)
+-- Shows or hides the outline adorn on every cutter in the place. A view
+-- preference, so callers should not wrap it in a ChangeHistory recording.
+function BoxCutterOperations.setOutlinesVisible(visible: boolean)
+	for _, box in CollectionService:GetTagged(Constants.CutterBoxTag) do
+		local parent = box.Parent
+		if box:IsA("SelectionBox") and parent and BoxCutterOperations.isCutter(parent) then
+			box.Visible = visible
 		end
 	end
+end
 
-	local parts = getGeometryParts(model)
-	for _, part in parts do
-		part.PivotOffset = CFrame.identity
-		part.Parent = model
+-- Bakes the cut into plain geometry and returns the result (part, union,
+-- or model of parts), or nil if the model had no geometry.
+--
+-- The result is built from CLONES and the cut model is then parented to nil
+-- in one step, cutters and all. Undo therefore only has to reverse a single
+-- parent change (plus delete the clones) to bring the model back exactly as
+-- it was - reparenting cutters and geometry piecemeal proved unreliable:
+-- Studio restored only part of the structure on undo. The model is never
+-- destroyed, so undo can always resurrect it.
+function BoxCutterOperations.bake(model: Model, shouldUnion: boolean): Instance?
+	local parts = {}
+	for _, part in getGeometryParts(model) do
+		local clone = part:Clone()
+		clone.PivotOffset = CFrame.identity
+		for _, texture in clone:GetChildren() do
+			if texture:IsA("Texture") then
+				texture:SetAttribute(ATTRS.TextureBaseOffsetU, nil)
+				texture:SetAttribute(ATTRS.TextureBaseOffsetV, nil)
+			end
+		end
+		table.insert(parts, clone)
 	end
-	getGeometryFolder(model).Parent = nil
+
+	if #parts == 0 then
+		model.Parent = nil
+		return nil
+	end
+
+	local parent = model.Parent
+	local result: Instance
+
+	if #parts == 1 then
+		local single = parts[1]
+		single.Name = model.Name
+		single.Parent = parent
+		result = single
+	else
+		local container = Instance.new("Model")
+		container.Name = model.Name
+		for _, part in parts do
+			part.Parent = container
+		end
+		container.Parent = parent
+		result = container
+	end
 
 	if shouldUnion and #parts >= 2 then
 		local primary = table.remove(parts, 1) :: BasePart
@@ -409,24 +522,17 @@ function BoxCutterOperations.bake(model: Model, shouldUnion: boolean): Instance
 		end)
 		if ok and unionPart then
 			unionPart.Name = model.Name
-			unionPart.Parent = model.Parent
-			model.Parent = nil
-			return unionPart
+			unionPart.Parent = parent
+			result.Parent = nil
+			result = unionPart
+		else
+			warn("BoxCutter: UnionAsync failed for " .. model.Name)
+			table.insert(parts, 1, primary)
 		end
-		warn("BoxCutter: UnionAsync failed for " .. model.Name)
-		table.insert(parts, 1, primary)
 	end
 
-	if #parts == 1 then
-		local single = parts[1]
-		single.Name = model.Name
-		single.Parent = model.Parent
-		model.Parent = nil
-		return single
-	end
-
-	model.PrimaryPart = parts[1]
-	return model
+	model.Parent = nil
+	return result
 end
 
 return BoxCutterOperations
