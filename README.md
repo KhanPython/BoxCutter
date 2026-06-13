@@ -18,6 +18,12 @@
 
 ---
 
+## Quick Demo
+
+<p align="center">
+  <video src="assets/boxCutterUsageDemo.mp4" controls width="600"></video>
+</p>
+
 ## Features
 
 - **Non-destructive cutting** - select the part to cut and press **Set Target**, then select the part(s) to cut with and click **Add Cutters**. The target becomes a cut model and your parts become invisible cutter boxes outlined in red.
