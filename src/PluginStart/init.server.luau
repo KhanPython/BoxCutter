@@ -508,7 +508,7 @@ do
 		ClickableWhenViewportHidden = true,
 		Name = "Box Cutter",
 		ToolTip = "Open Box Cutter widget",
-		Image = "",
+		Image = Constants.PluginImage,
 
 		[OnEvent("Click")] = function()
 			widgetsEnabled:set(not widgetsEnabled:get())

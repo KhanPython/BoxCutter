@@ -1,6 +1,7 @@
 return {
 	Version = "0.4.0",
-	PluginAssetId = 0,
+	PluginAssetId = 73159461276495,
+	PluginImage = "rbxassetid://91630539167903",
 
 	-- Smallest dimension a generated solid part may have on any axis
 	MinPartSize = 0.05,
