@@ -27,6 +27,10 @@ return {
 	CutterName = "Cutter",
 	CutterBoxName = "CutterBox",
 
+	-- Suffix appended to a part's name when it becomes a cut model; stripped
+	-- back off on bake so the resulting geometry keeps the original name
+	CutModelSuffix = "_Cut",
+
 	-- CollectionService tag identifying the outline SelectionBoxes the plugin
 	-- places on cutters; survives renames and avoids workspace-wide scans
 	CutterBoxTag = "BoxCutterOutline",

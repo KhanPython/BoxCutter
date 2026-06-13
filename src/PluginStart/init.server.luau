@@ -14,7 +14,6 @@ local ToolbarButton = require(PluginComponents.ToolbarButton)
 
 local StudioComponents = Components:FindFirstChild("StudioComponents")
 local ScrollFrame = require(StudioComponents.ScrollFrame)
-local MainButton = require(StudioComponents.MainButton)
 local Button = require(StudioComponents.Button)
 local Checkbox = require(StudioComponents.Checkbox)
 local Label = require(StudioComponents.Label)
@@ -325,10 +324,18 @@ local function onHeartbeat()
 	end
 end
 
-local function doSetTarget()
+local function doToggleTarget()
+	-- One button, two jobs. Selecting a different valid part always wins, so
+	-- you can retarget in one click without removing first; only when there is
+	-- nothing new to target does the button clear the current one.
 	local candidate = targetCandidate:get()
-	if candidate then
+	local current = activeTarget:get()
+	if candidate and candidate ~= current then
 		setTarget(candidate)
+	elseif current ~= nil and not current:IsA("Model") then
+		-- Only a plain-part target is removable; a cut-model target is cleared
+		-- by deselecting it, never by this button (see canRemoveTarget).
+		setTarget(nil)
 	end
 end
 
@@ -392,8 +399,82 @@ local canSetTarget = Computed(function()
 	return candidate ~= nil and candidate ~= activeTarget:get()
 end)
 
+-- A cut-model target is never explicitly removable. Selecting a cut model
+-- auto-targets it (see updateSelection), so offering "Remove Target" would be a
+-- confusing no-op - the model stays cut and re-selecting it brings the target
+-- straight back. Only an explicitly Set plain-part target can be removed.
+local canRemoveTarget = Computed(function()
+	local current = activeTarget:get()
+	return current ~= nil and not current:IsA("Model")
+end)
+
+-- The Set/Remove Target button has two modes. When a new valid part is
+-- selected it offers "Set Target" (retargeting included); with no new
+-- candidate but a removable plain-part target it offers "Remove Target". Color
+-- reinforces the mode: blue accent to set, red text to remove.
+local targetButtonText = Computed(function()
+	if not canSetTarget:get() and canRemoveTarget:get() then
+		return "Remove Target"
+	end
+	return "Set Target"
+end)
+
+local canToggleTarget = Computed(function()
+	return canSetTarget:get() or canRemoveTarget:get()
+end)
+
+local targetButtonBackground = Computed(function()
+	return if canSetTarget:get() then Enum.StudioStyleGuideColor.DialogMainButton else Enum.StudioStyleGuideColor.Button
+end)
+
+local targetButtonTextColor = Computed(function()
+	if canSetTarget:get() then
+		return Enum.StudioStyleGuideColor.DialogMainButtonText
+	elseif canRemoveTarget:get() then
+		return Enum.StudioStyleGuideColor.ErrorText
+	end
+	return Enum.StudioStyleGuideColor.ButtonText
+end)
+
 local canAddCutters = Computed(function()
 	return activeTarget:get() ~= nil and #pendingCutters:get() > 0
+end)
+
+local addCuttersText = Computed(function()
+	return if #pendingCutters:get() > 1 then "Set Cutters" else "Set Cutter"
+end)
+
+-- Mirror the Set Target / Bake accent: the blue main-button styling only when
+-- cutters can actually be added. Otherwise it stays neutral, so setting a
+-- target (which leaves only the target selected) no longer leaves Set Cutters
+-- looking like the primary action when there is nothing to add.
+local addCuttersBackground = Computed(function()
+	return if canAddCutters:get()
+		then Enum.StudioStyleGuideColor.DialogMainButton
+		else Enum.StudioStyleGuideColor.Button
+end)
+
+local addCuttersTextColor = Computed(function()
+	return if canAddCutters:get()
+		then Enum.StudioStyleGuideColor.DialogMainButtonText
+		else Enum.StudioStyleGuideColor.ButtonText
+end)
+
+local canBake = Computed(function()
+	return #selectedModels:get() > 0
+end)
+
+-- Mirror the Set Target accent: the blue main-button background only when the
+-- action is actually available, so an enabled Bake reads as the primary thing
+-- to do, and a disabled one stays neutral.
+local bakeButtonBackground = Computed(function()
+	return if canBake:get() then Enum.StudioStyleGuideColor.DialogMainButton else Enum.StudioStyleGuideColor.Button
+end)
+
+local bakeButtonTextColor = Computed(function()
+	return if canBake:get()
+		then Enum.StudioStyleGuideColor.DialogMainButtonText
+		else Enum.StudioStyleGuideColor.ButtonText
 end)
 
 local statusText = Computed(function()
@@ -479,19 +560,23 @@ do
 				}),
 
 				Button({
-					Text = "Set Target",
+					Text = targetButtonText,
 					Size = UDim2.new(1, 0, 0, 30),
 					LayoutOrder = 3,
-					Enabled = canSetTarget,
-					Activated = doSetTarget,
+					Enabled = canToggleTarget,
+					Activated = doToggleTarget,
+					BackgroundColorStyle = targetButtonBackground,
+					TextColorStyle = targetButtonTextColor,
 				}),
 
-				MainButton({
-					Text = "Add Cutters",
+				Button({
+					Text = addCuttersText,
 					Size = UDim2.new(1, 0, 0, 30),
 					LayoutOrder = 4,
 					Enabled = canAddCutters,
 					Activated = doAddCutters,
+					BackgroundColorStyle = addCuttersBackground,
+					TextColorStyle = addCuttersTextColor,
 				}),
 
 				Checkbox({
@@ -499,15 +584,6 @@ do
 					Value = showCutterOutlines,
 					Size = UDim2.new(1, 0, 0, 20),
 					LayoutOrder = 5,
-				}),
-
-				Label({
-					Text = "Select a block Part or cut model and press Set Target, then select the parts to cut with and press Add Cutters. Move, rotate, resize, or delete cutters at any time - the cut updates live while this widget is open.",
-					Size = UDim2.new(1, 0, 0, 90),
-					TextSize = 15,
-					TextWrapped = true,
-					TextColorStyle = Enum.StudioStyleGuideColor.DimmedText,
-					LayoutOrder = 6,
 				}),
 
 				Title({
@@ -533,10 +609,10 @@ do
 					Text = "Bake Selection",
 					Size = UDim2.new(1, 0, 0, 30),
 					LayoutOrder = 10,
-					Enabled = Computed(function()
-						return #selectedModels:get() > 0
-					end),
+					Enabled = canBake,
 					Activated = doBake,
+					BackgroundColorStyle = bakeButtonBackground,
+					TextColorStyle = bakeButtonTextColor,
 				}),
 
 				Label({

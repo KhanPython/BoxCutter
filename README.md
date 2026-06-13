@@ -1,7 +1,19 @@
+<p align="center">
+  <img src="assets/logo.png" alt="BoxCutter Logo" width="256" />
+</p>
+
 <h1 align="center">BoxCutter</h1>
 
 <p align="center">
-  A Roblox Studio plugin that cuts box-shaped holes into Parts non-destructively, with live preview while you move the cutter.
+  A Roblox Studio plugin that cuts box-shaped holes out of BaseParts non-destructively, with a live preview while you move the cutter.
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/github/license/KhanPython/BoxCutter" alt="License" />
+  <img src="https://img.shields.io/github/last-commit/KhanPython/BoxCutter" alt="Last Commit" />
+  <img src="https://img.shields.io/github/repo-size/KhanPython/BoxCutter" alt="Repo Size" />
+  <img src="https://img.shields.io/github/languages/top/KhanPython/BoxCutter" alt="Top Language" />
+  <img src="https://img.shields.io/github/languages/count/KhanPython/BoxCutter" alt="Languages" />
 </p>
 
 ---

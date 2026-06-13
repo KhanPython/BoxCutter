@@ -401,7 +401,7 @@ function BoxCutterOperations.setup(part: BasePart): Model
 	local sourceCF = part.CFrame
 
 	local model = Instance.new("Model")
-	model.Name = part.Name .. "_Cut"
+	model.Name = part.Name .. Constants.CutModelSuffix
 	model:AddTag(Constants.CutModelTag)
 	model:SetAttribute(ATTRS.SourceSize, part.Size)
 	storeProperties(model, part)
@@ -485,6 +485,18 @@ end
 -- it was - reparenting cutters and geometry piecemeal proved unreliable:
 -- Studio restored only part of the structure on undo. The model is never
 -- destroyed, so undo can always resurrect it.
+-- The baked name is the model's name with the "_Cut" suffix stripped, so the
+-- result inherits the source part's original name. Respects renames: whatever
+-- the model is called in the explorer (minus the suffix) is what bakes out.
+local function bakedName(model: Model): string
+	local suffix = Constants.CutModelSuffix
+	local name = model.Name
+	if #suffix > 0 and name:sub(-#suffix) == suffix then
+		return name:sub(1, #name - #suffix)
+	end
+	return name
+end
+
 function BoxCutterOperations.bake(model: Model, shouldUnion: boolean, groupResult: boolean): { Instance }
 	local parts = {}
 	for _, part in getGeometryParts(model) do
@@ -505,17 +517,19 @@ function BoxCutterOperations.bake(model: Model, shouldUnion: boolean, groupResul
 	end
 
 	local parent = model.Parent
+	local name = bakedName(model)
 	local results: { Instance }
 
 	if #parts == 1 then
 		local single = parts[1]
-		single.Name = model.Name
+		single.Name = name
 		single.Parent = parent
 		results = { single }
 	elseif groupResult then
 		local container = Instance.new("Model")
-		container.Name = model.Name
+		container.Name = name
 		for _, part in parts do
+			part.Name = name
 			part.Parent = container
 		end
 		container.Parent = parent
@@ -523,7 +537,7 @@ function BoxCutterOperations.bake(model: Model, shouldUnion: boolean, groupResul
 	else
 		results = {}
 		for _, part in parts do
-			part.Name = model.Name
+			part.Name = name
 			part.Parent = parent
 			table.insert(results, part)
 		end
@@ -535,7 +549,7 @@ function BoxCutterOperations.bake(model: Model, shouldUnion: boolean, groupResul
 			return primary:UnionAsync(parts)
 		end)
 		if ok and unionOrErr then
-			unionOrErr.Name = model.Name
+			unionOrErr.Name = name
 			unionOrErr.Parent = parent
 			for _, result in results do
 				result.Parent = nil

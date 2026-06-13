@@ -79,9 +79,12 @@ return function(props: BaseButtonProperties): TextButton
 				end
 			end,
 			[OnEvent "InputEnded"] = function(inputObject)
-				if not unwrap(isEnabled) then
-					return
-				elseif inputObject.UserInputType == Enum.UserInputType.MouseMovement then
+				-- Always clear on release, even when disabled: an Activated
+				-- handler that disables the button in the same frame (e.g. Bake
+				-- emptying the selection) must not leave Hover/Pressed stuck on,
+				-- or the button springs back as a spurious dark-blue Pressed
+				-- state the next time it is re-enabled.
+				if inputObject.UserInputType == Enum.UserInputType.MouseMovement then
 					isHovering:set(false)
 				elseif inputObject.UserInputType == Enum.UserInputType.MouseButton1 then
 					isPressed:set(false)
