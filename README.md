@@ -5,7 +5,7 @@
 <h1 align="center">BoxCutter</h1>
 
 <p align="center">
-  A Roblox Studio plugin that cuts box-shaped holes out of BaseParts non-destructively, with a live preview while you move the cutter.
+  A Roblox Studio plugin that cuts box-shaped holes into Parts non-destructively.
 </p>
 
 <p align="center">
