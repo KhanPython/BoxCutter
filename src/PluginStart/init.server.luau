@@ -182,7 +182,7 @@ end
 local function isModelDirty(model: Model, state: { [any]: any }): boolean
 	local cutterCount = 0
 	for _, child in model:GetChildren() do
-		if child:IsA("BasePart") and child:GetAttribute(Constants.Attributes.Cutter) == true then
+		if child:IsA("BasePart") and child:HasTag(Constants.CutterTag) then
 			cutterCount += 1
 			local cached = state[child]
 			if not cached or cached.cf ~= child.CFrame or cached.size ~= child.Size then

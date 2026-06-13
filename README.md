@@ -29,8 +29,7 @@
 - **Non-destructive cutting** - select the part to cut and press **Set Target**, then select the part(s) to cut with and click **Add Cutters**. The target becomes a cut model and your parts become invisible cutter boxes outlined in red.
 - **Live editing** - move, rotate, or resize cutter boxes with the standard Studio tools; the cut geometry regenerates in real time while the widget is open.
 - **Multiple cutters** - adopt as many cutter parts per model as you want, before or after the first cut; delete a cutter to remove its cut.
-- **Attribute-driven** - the source part's size and visual properties are stored as attributes (`BoxCutterSourceSize`, `BoxCutterProp_*`), so cut models survive saves and can be re-edited any time.
-- **Bake** - strips cutters and plugin attributes, leaving plain geometry; optionally unions the result into a single UnionOperation.
+- **Bake** - strips cutters and plugin data, leaving plain geometry; optionally unions the result into a single UnionOperation.
 - **Undo support** - every change is recorded with `ChangeHistoryService`, so undo always restores a consistent state. A whole drag session coalesces into a single waypoint (or folds into Studio's own move gesture, so undoing the cutter move restores the cut in the same step) to keep the history clean.
 - **Native Studio look** - the widget UI is built with Fusion and themed Studio components.
 
