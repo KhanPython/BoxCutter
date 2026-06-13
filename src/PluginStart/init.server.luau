@@ -548,11 +548,6 @@ do
 			}),
 
 			[Children] = {
-				Title({
-					Text = "Cutting",
-					LayoutOrder = 1,
-				}),
-
 				Label({
 					Text = statusText,
 					Size = UDim2.new(1, 0, 0, 20),
